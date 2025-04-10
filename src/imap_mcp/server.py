@@ -1,4 +1,3 @@
-from fastapi import FastAPI, HTTPException
 from fastmcp import FastMCP
 from pydantic import BaseModel
 import os
@@ -6,13 +5,13 @@ from dotenv import load_dotenv
 import imaplib
 import email
 from email.header import decode_header
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+import json
 
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title="IMAP MCP Server")
-mcp = FastMCP(app)
+mcp = FastMCP()
 
 class IMAPConfig(BaseModel):
     host: str
@@ -46,11 +45,11 @@ class IMAPConnection:
         except Exception as e:
             self.conn = None
             self.config = None
-            raise HTTPException(status_code=500, detail=str(e))
+            raise Exception(str(e))
     
     def ensure_connected(self):
         if not self.conn or not self.config:
-            raise HTTPException(status_code=500, detail="Not connected to IMAP server")
+            raise Exception("Not connected to IMAP server")
         try:
             self.conn.noop()
         except:
@@ -58,7 +57,7 @@ class IMAPConnection:
             if self.config:
                 self.connect(self.config)
             else:
-                raise HTTPException(status_code=500, detail="Connection lost and unable to reconnect")
+                raise Exception("Connection lost and unable to reconnect")
     
     def list_folders(self) -> List[str]:
         self.ensure_connected()
@@ -74,7 +73,7 @@ class IMAPConnection:
                 folder_names.append(name.strip().strip('"'))
             return folder_names
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise Exception(str(e))
     
     def get_emails(self, folder: str, limit: int = 10) -> List[Dict[str, Any]]:
         self.ensure_connected()
@@ -100,49 +99,43 @@ class IMAPConnection:
             
             return email_list
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise Exception(str(e))
 
 imap = IMAPConnection.get_instance()
 
-@app.post("/mcp/connect")
-async def connect_imap(config: IMAPConfig):
+@mcp.tool()
+async def connect_imap(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Connect to an IMAP server with the provided configuration.
     """
     try:
-        imap.connect(config)
-        return {"status": "connected", "config": config}
-    except HTTPException as e:
-        raise e
+        config_obj = IMAPConfig(**config)
+        imap.connect(config_obj)
+        return [{"status": "connected", "config": config}]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise Exception(str(e))
 
-@app.post("/mcp/list_folders")
-async def list_folders():
+@mcp.tool()
+async def list_folders() -> List[Dict[str, List[str]]]:
     """
     List all available IMAP folders.
     """
     try:
         folders = imap.list_folders()
-        return {"folders": folders}
-    except HTTPException as e:
-        raise e
+        return [{"folders": folders}]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise Exception(str(e))
 
-@app.post("/mcp/get_emails")
-async def get_emails(folder: str, limit: int = 10):
+@mcp.tool()
+async def get_emails(folder: str, limit: Optional[int] = 10) -> List[Dict[str, List[Dict[str, str]]]]:
     """
     Retrieve emails from a specific folder.
     """
     try:
         emails = imap.get_emails(folder, limit)
-        return {"emails": emails}
-    except HTTPException as e:
-        raise e
+        return [{"emails": emails}]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise Exception(str(e))
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    mcp.run() 
