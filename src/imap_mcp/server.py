@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
 import imaplib
+import smtplib
 import email
 from email.header import decode_header
 from typing import List, Dict, Any, Optional
@@ -13,12 +14,16 @@ load_dotenv()
 
 mcp = FastMCP()
 
-class IMAPConfig(BaseModel):
-    host: str
-    port: int
+class EmailConfig(BaseModel):
+    imap_host: str
+    imap_port: int
+    smtp_host: str
+    smtp_port: int
     username: str
     password: str
     use_ssl: bool = True
+    smtp_use_ssl: bool = True
+    smtp_use_tls: bool = True
 
 class IMAPConnection:
     _instance = None
@@ -33,12 +38,12 @@ class IMAPConnection:
             cls._instance = cls()
         return cls._instance
     
-    def connect(self, config: IMAPConfig):
+    def connect(self, config: EmailConfig):
         try:
             if config.use_ssl:
-                self.conn = imaplib.IMAP4_SSL(config.host, config.port)
+                self.conn = imaplib.IMAP4_SSL(config.imap_host, config.imap_port)
             else:
-                self.conn = imaplib.IMAP4(config.host, config.port)
+                self.conn = imaplib.IMAP4(config.imap_host, config.imap_port)
             self.conn.login(config.username, config.password)
             self.config = config
             return True
@@ -101,7 +106,64 @@ class IMAPConnection:
         except Exception as e:
             raise Exception(str(e))
 
+class SMTPConnection:
+    _instance = None
+    
+    def __init__(self):
+        self.conn = None
+        self.config = None
+        
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def connect(self, config: EmailConfig):
+        try:
+            if config.smtp_use_ssl:
+                self.conn = smtplib.SMTP_SSL(config.smtp_host, config.smtp_port)
+            else:
+                self.conn = smtplib.SMTP(config.smtp_host, config.smtp_port)
+                if config.smtp_use_tls:
+                    self.conn.starttls()
+            self.conn.login(config.username, config.password)
+            self.config = config
+            return True
+        except Exception as e:
+            self.conn = None
+            self.config = None
+            raise Exception(str(e))
+    
+    def ensure_connected(self):
+        if not self.conn or not self.config:
+            raise Exception("Not connected to SMTP server")
+        try:
+            self.conn.noop()
+        except:
+            # Try to reconnect
+            if self.config:
+                self.connect(self.config)
+            else:
+                raise Exception("Connection lost and unable to reconnect")
+    
+    def send_email(self, to_email: str, subject: str, body: str) -> bool:
+        if not self.conn or not self.config:
+            raise Exception("Not connected to SMTP server")
+        try:
+            msg = email.message.EmailMessage()
+            msg["From"] = self.config.username
+            msg["To"] = to_email
+            msg["Subject"] = subject
+            msg.set_content(body)
+            
+            self.conn.send_message(msg)
+            return True
+        except Exception as e:
+            raise Exception(str(e))
+
 imap = IMAPConnection.get_instance()
+smtp = SMTPConnection.get_instance()
 
 @mcp.tool()
 async def connect_imap(config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -109,7 +171,7 @@ async def connect_imap(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     Connect to an IMAP server with the provided configuration.
     """
     try:
-        config_obj = IMAPConfig(**config)
+        config_obj = EmailConfig(**config)
         imap.connect(config_obj)
         return [{"status": "connected", "config": config}]
     except Exception as e:
@@ -134,6 +196,29 @@ async def get_emails(folder: str, limit: Optional[int] = 10) -> List[Dict[str, L
     try:
         emails = imap.get_emails(folder, limit)
         return [{"emails": emails}]
+    except Exception as e:
+        raise Exception(str(e))
+
+@mcp.tool()
+async def connect_smtp(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Connect to an SMTP server with the provided configuration.
+    """
+    try:
+        config_obj = EmailConfig(**config)
+        smtp.connect(config_obj)
+        return [{"status": "connected", "config": config}]
+    except Exception as e:
+        raise Exception(str(e))
+
+@mcp.tool()
+async def send_email(to_email: str, subject: str, body: str) -> List[Dict[str, Any]]:
+    """
+    Send an email using the configured SMTP server.
+    """
+    try:
+        success = smtp.send_email(to_email, subject, body)
+        return [{"status": "sent", "to": to_email, "subject": subject}]
     except Exception as e:
         raise Exception(str(e))
 
